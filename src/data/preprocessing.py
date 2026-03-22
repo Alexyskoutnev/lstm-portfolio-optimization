@@ -2,6 +2,40 @@
 
 Provides functions for computing returns and splitting data into
 temporally-ordered train/validation/test sets.
+
+Key concepts for someone new to quantitative finance
+-----------------------------------------------------
+**Returns, not prices**: ML models should be trained on *returns* (percentage
+changes), not raw prices.  Prices are non-stationary (they trend upward over
+time), which violates the assumptions of most statistical and ML models.
+Returns are approximately stationary and mean-zero, making them suitable
+inputs for covariance estimation, regression, and optimization.
+
+**Log returns vs. simple returns**: We compute both.  Each has a distinct
+mathematical property that makes it useful in different contexts:
+
+  - **Log returns** ``r_log = ln(P_t / P_{t-1})``:
+      * *Time-additive*: the cumulative log return over multiple periods is
+        simply the *sum* of daily log returns.  For example, the 5-day log
+        return equals ``r1 + r2 + r3 + r4 + r5``.  This makes rolling-window
+        calculations trivial and is why log returns are preferred for time
+        series modeling.
+      * *Closer to normally distributed*: the log transform compresses
+        extreme positive returns and stretches extreme negative ones, pulling
+        the distribution closer to a Gaussian -- an assumption that underlies
+        mean-variance optimization.
+      * *Symmetry*: a +10% log return followed by a -10% log return returns
+        you exactly to the starting price.  Simple returns do NOT have this
+        property (+10% then -10% simple leaves you at 99% of the start).
+
+  - **Simple returns** ``r_simple = (P_t - P_{t-1}) / P_{t-1}``:
+      * *Cross-sectionally additive*: a portfolio's return is the weighted
+        sum of its constituents' simple returns.  This is essential for
+        computing actual portfolio P&L.
+      * More intuitive: "the stock went up 3% today."
+
+We use **log returns** as the primary input for modeling and optimization,
+and **simple returns** when we need to calculate actual portfolio performance.
 """
 
 import logging
@@ -19,6 +53,8 @@ def compute_log_returns(prices: pd.DataFrame) -> pd.DataFrame:
     aggregation because they are time-additive:
     ``r(t0, t2) = r(t0, t1) + r(t1, t2)``.
 
+    Mathematically: ``log_return_t = ln(P_t / P_{t-1})``
+
     Args:
         prices: DataFrame with DatetimeIndex and one column per asset,
             containing adjusted close prices.
@@ -34,6 +70,9 @@ def compute_log_returns(prices: pd.DataFrame) -> pd.DataFrame:
 
     # shift(1) gives the previous day's price; dividing gives the price
     # ratio, and np.log converts it to a continuously-compounded return.
+    # Example: if XLK closed at $100 yesterday and $103 today,
+    #   price ratio = 103/100 = 1.03
+    #   log return  = ln(1.03) = 0.02956  (~2.96%)
     log_returns = np.log(prices / prices.shift(1))
 
     # The first row is always NaN because there is no prior price to
@@ -50,7 +89,9 @@ def compute_simple_returns(prices: pd.DataFrame) -> pd.DataFrame:
 
     Simple returns represent the actual percentage gain/loss and are
     useful for portfolio-weighted return calculations because they
-    aggregate linearly across assets.
+    aggregate linearly across assets:
+        ``portfolio_return = sum(w_i * r_i)``
+    This does NOT hold for log returns, which is why we need both.
 
     Args:
         prices: DataFrame with DatetimeIndex and one column per asset.
@@ -96,10 +137,25 @@ def split_data(
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Split a time series DataFrame into train, validation, and test sets.
 
-    Uses a strict temporal (chronological) split rather than random
-    shuffling.  In financial time series, random splits would leak
-    future information into the training set, producing overly
-    optimistic back-test results that do not generalise to live trading.
+    **WHY temporal split, not random?**
+
+    In standard ML (e.g., image classification), random train/test splits are
+    fine because samples are independent.  Financial time series are *not*
+    independent -- today's return is correlated with yesterday's, and market
+    regimes persist for months.  A random split would let the model "peek" at
+    future data during training, a problem called **look-ahead bias**.
+
+    Concrete example of what goes wrong with random splits:
+      Suppose the market crashes on day 500.  With a random split, days 499
+      and 501 might land in training while day 500 lands in test.  The model
+      effectively learns "a crash is coming" from the surrounding days.  In a
+      backtest this looks great -- the model "predicted" the crash -- but in
+      live trading it would never have had access to day 501's data when
+      making the day-500 decision.  The backtest was unrealistically optimistic.
+
+    A temporal split ensures the model is always trained on *past* data and
+    evaluated on *future* data, exactly mimicking the information available
+    during real-world portfolio management.
 
     Args:
         df: DataFrame with DatetimeIndex to split.
@@ -117,7 +173,7 @@ def split_data(
 
     n = len(df)
 
-    # Integer cutoff indices – floor via int() so rounding never pushes
+    # Integer cutoff indices -- floor via int() so rounding never pushes
     # a boundary past the end of the DataFrame.
     train_end = int(n * train_ratio)
     val_end = int(n * (train_ratio + val_ratio))

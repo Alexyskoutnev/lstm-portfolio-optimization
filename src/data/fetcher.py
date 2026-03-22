@@ -1,4 +1,34 @@
-"""Fetch and cache financial price data from Yahoo Finance."""
+"""Fetch and cache financial price data from Yahoo Finance.
+
+Why adjusted close prices?
+--------------------------
+Raw "Close" prices do not account for corporate actions like stock splits or
+dividend payments.  For example, if a stock trading at $100 does a 2-for-1
+split, its raw close drops to $50 overnight -- but no value was actually lost.
+Similarly, when a company pays a $2 dividend, the stock price drops by ~$2 on
+the ex-date.  **Adjusted close** retroactively modifies the entire price
+history so that returns computed from consecutive adjusted prices reflect the
+*total* return an investor would have actually earned (price appreciation +
+dividends).  Without this adjustment, our return calculations would show
+phantom losses on every split and dividend date, corrupting our covariance
+estimates and optimization.
+
+We pass ``auto_adjust=True`` to ``yf.download``, which tells yfinance to
+return already-adjusted prices in the "Close" column.
+
+Why cache?
+----------
+1. **Rate limiting**: Yahoo Finance throttles or temporarily bans IPs that
+   make too many requests.  Caching ensures we hit the API only once per
+   unique query.
+2. **Reproducibility**: If Yahoo revises or back-adjusts data, our cached
+   snapshot keeps results stable across experiments.
+3. **Speed**: Downloading 15 years of daily data for 11+ tickers takes several
+   seconds; reading a local CSV is nearly instant.
+
+Caveat: a stale cache can hide newly available data or corrections.  If you
+suspect data issues, delete the cache directory and re-download.
+"""
 
 import logging
 from pathlib import Path
@@ -9,13 +39,11 @@ import yfinance as yf
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Cache helpers
-# ---------------------------------------------------------------------------
-
-
 def _build_cache_path(cache_dir: str, tickers: list[str], start: str, end: str) -> Path:
     """Build a deterministic cache file path for a given query.
+
+    The filename encodes all query parameters (tickers + date range) so that
+    any change in the request automatically produces a cache miss.
 
     Args:
         cache_dir: Directory where cache files are stored.
@@ -79,7 +107,14 @@ def _download_raw(tickers: list[str], start: str, end: str) -> pd.DataFrame:
     """
     logger.info("Downloading data for %s from %s to %s", tickers, start, end)
     # group_by="ticker" ensures multi-ticker downloads produce a MultiIndex
-    # with (ticker, field) columns, giving us a uniform structure to parse.
+    # with (ticker, field) columns -- e.g., ("XLK", "Close"), ("XLF", "Close").
+    # Without this flag, yfinance groups by *field* first -- ("Close", "XLK"),
+    # ("Close", "XLF") -- which makes extracting per-ticker data awkward and
+    # inconsistent between single-ticker and multi-ticker calls.
+    #
+    # auto_adjust=True folds dividend and split adjustments into the Close
+    # price so we get *total-return-equivalent* prices directly (see module
+    # docstring for why this matters).
     raw: pd.DataFrame = yf.download(  # type: ignore[assignment]
         tickers,
         start=start,
@@ -143,9 +178,20 @@ def _extract_close_prices(raw: pd.DataFrame, tickers: list[str]) -> pd.DataFrame
 def _fill_missing_prices(df: pd.DataFrame) -> pd.DataFrame:
     """Forward-fill then back-fill missing prices.
 
-    Different ETFs/stocks may observe different market holidays, leaving
-    sporadic NaNs.  Forward-fill propagates the last known price into gaps,
-    and back-fill covers any leading NaNs at the start of the series.
+    WHY ffill *then* bfill?
+    Different ETFs (and the VIX) may observe different market holidays or
+    have different listing dates, leaving sporadic NaN gaps.  For example,
+    XLRE (Real Estate) was created in 2015, so it has no data before then,
+    and international holidays can cause a single ETF to be missing on an
+    otherwise normal trading day.
+
+    - **Forward-fill (ffill)** propagates the last known price into gaps.
+      This is financially sensible: if a market is closed, the last traded
+      price is the best estimate of the asset's value.
+    - **Back-fill (bfill)** handles leading NaNs at the very start of a
+      series (e.g., a newly listed ETF).  It copies the first available
+      price backward.  This is a weaker assumption, but unavoidable for
+      the first few rows.
 
     Args:
         df: DataFrame that may contain NaN values.
@@ -168,11 +214,6 @@ def _fill_missing_prices(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-
 def fetch_prices(
     tickers: list[str],
     start: str,
@@ -180,6 +221,9 @@ def fetch_prices(
     cache_dir: str | None = None,
 ) -> pd.DataFrame:
     """Download adjusted close prices for the given tickers.
+
+    Pipeline: check cache -> download OHLCV -> extract Close -> fill gaps ->
+    write cache.  The result is a clean DataFrame ready for return computation.
 
     Args:
         tickers: List of ticker symbols (e.g., ["XLK", "XLF"]).
@@ -210,12 +254,17 @@ def fetch_prices(
     # --- Persist to cache ---
     if cache_path is not None:
         _write_cache(df, cache_path)
-
+    breakpoint()
     return df
 
 
 def fetch_vix(start: str, end: str) -> pd.Series:
     """Download VIX close prices.
+
+    The VIX is not a tradeable stock -- it is an index computed in real time
+    by the CBOE from S&P 500 option prices.  Its "Close" value is the final
+    calculation of the trading day.  We download it separately from the sector
+    ETFs because it serves as a *regime label*, not an investable asset.
 
     Args:
         start: Start date in "YYYY-MM-DD" format.
@@ -248,6 +297,8 @@ def fetch_vix(start: str, end: str) -> pd.Series:
     vix.name = "VIX"
 
     # Forward-fill then back-fill to cover holiday gaps and leading NaNs.
+    # Same rationale as _fill_missing_prices: last known value is the best
+    # estimate when the market is closed.
     vix = vix.ffill().bfill()
     logger.debug("VIX data fetched; %d observations", len(vix))
     return vix  # type: ignore[return-value]

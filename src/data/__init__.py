@@ -1,7 +1,41 @@
 """Data module for portfolio optimization project.
 
-Provides a single entry point for loading and preprocessing
-financial time series data.
+Provides a single entry point (``load_dataset``) for loading and preprocessing
+financial time series data.  The full pipeline is:
+
+1. **Fetch prices** (``fetcher.fetch_prices``):
+   Download adjusted close prices for each sector ETF from Yahoo Finance,
+   with local CSV caching.  "Adjusted close" accounts for dividends and stock
+   splits so that returns computed from consecutive prices reflect true total
+   returns.
+
+2. **Fetch VIX** (``fetcher.fetch_vix``):
+   Download the CBOE Volatility Index separately.  The VIX is not an
+   investable asset -- it is an implied-volatility index derived from S&P 500
+   option prices.  We use it purely as a *regime label* (see step 5).
+
+3. **Compute returns** (``preprocessing.compute_log_returns`` / ``compute_simple_returns``):
+   Convert prices to returns.  Models should never be trained on raw prices
+   because prices are non-stationary (they trend upward over time).  Returns
+   are approximately stationary and mean-zero.
+
+4. **Reindex VIX to the returns calendar**:
+   The VIX and sector ETFs can trade on slightly different days (the CBOE
+   options market and NYSE equity market have marginally different holiday
+   schedules).  ``vix.reindex(log_returns.index)`` aligns VIX to the exact
+   dates present in our return data.  Forward-fill carries the last known VIX
+   value into any gap (e.g., VIX was published on a day an ETF did not trade),
+   and back-fill covers leading NaNs.  Without this step, we would have NaN
+   regime labels on some trading days, breaking downstream model training.
+
+5. **Label volatility regimes** (``regime.label_regimes_vix``):
+   Classify each day as low / medium / high volatility using VIX thresholds.
+   This lets us train regime-aware models or evaluate how portfolio strategies
+   perform under different market conditions.
+
+6. **Temporal train/val/test split** (``preprocessing.split_data``):
+   Split chronologically -- never randomly -- to prevent look-ahead bias.
+   The model must only learn from past data, exactly as in live trading.
 """
 
 import logging
@@ -34,8 +68,9 @@ def load_dataset(
 ) -> dict:
     """Load and preprocess the full dataset for modeling.
 
-    Downloads price data, computes returns, labels volatility regimes,
-    and creates temporal train/validation/test splits.
+    This is the main entry point that orchestrates the entire data pipeline
+    described in the module docstring.  Call this once and you get back
+    everything needed for model training and evaluation.
 
     Args:
         tickers: List of ETF ticker symbols.
@@ -62,13 +97,16 @@ def load_dataset(
         end,
     )
 
+    # Step 1 & 2: Fetch raw price data and VIX
     prices = fetch_prices(tickers, start=start, end=end, cache_dir=cache_dir)
     vix = fetch_vix(start=start, end=end)
     logger.debug("Fetched prices shape %s, VIX length %d", prices.shape, len(vix))
 
+    # Step 3: Convert prices to returns
     log_returns = compute_log_returns(prices)
     simple_returns = compute_simple_returns(prices)
 
+    # Step 4 & 5: Align VIX to the returns calendar and label regimes.
     # Reindex VIX to the returns calendar so every return row has a
     # regime label.  VIX and the asset universe may trade on slightly
     # different days (e.g., early closes, holidays), so forward-fill
@@ -77,6 +115,7 @@ def load_dataset(
     vix_aligned = vix.reindex(log_returns.index).ffill().bfill()
     regime_vix = label_regimes_vix(vix_aligned)
 
+    # Step 6: Temporal (chronological) split -- never random
     train, val, test = split_data(
         log_returns, train_ratio=train_ratio, val_ratio=val_ratio
     )
