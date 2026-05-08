@@ -212,6 +212,10 @@ def train_lstm(
         int(train_mask.sum()), int(val_mask.sum()), len(asset_order),
     )
 
+    # Track best val loss for logging only — by default we train for all
+    # epochs because our natural val window overlaps the COVID crash, which
+    # makes early stopping fire too aggressively.
+    use_early_stopping = patience > 0 and patience < epochs
     best_val = float("inf")
     epochs_without_improve = 0
     best_state = None
@@ -240,13 +244,14 @@ def train_lstm(
             "Epoch %d/%d  train=%.6f  val=%.6f", epoch, epochs, train_loss, val_loss
         )
 
+        # Always remember the best-val state — restored at the end.
         if val_loss < best_val - 1e-7:
             best_val = val_loss
             epochs_without_improve = 0
             best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
         else:
             epochs_without_improve += 1
-            if epochs_without_improve >= patience:
+            if use_early_stopping and epochs_without_improve >= patience:
                 logger.info("Early stopping at epoch %d (best val=%.6f)", epoch, best_val)
                 break
 

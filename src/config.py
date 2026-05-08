@@ -132,8 +132,12 @@ GBT_DEFAULT_PARAMS: Final[dict] = {
     "bagging_fraction": 0.8,
     "bagging_freq": 5,
     "lambda_l2": 1.0,
-    "num_iterations": 500,
-    "early_stopping_round": 50,
+    # We deliberately do NOT use early stopping here. The natural validation
+    # window for our train/val/test split (2019-2021) overlaps with the COVID
+    # crash, which makes val loss explode and triggers early stopping after
+    # ~2 iterations — leaving GBT predicting essentially a constant. Fixed
+    # iteration count + L2 regularization is more honest for this dataset.
+    "num_iterations": 200,
     "verbose": -1,
 }
 GBT_OPTUNA_TRIALS: Final[int] = 50
@@ -148,5 +152,8 @@ LSTM_NUM_LAYERS: Final[int] = 1
 LSTM_DROPOUT: Final[float] = 0.1
 LSTM_LEARNING_RATE: Final[float] = 1e-3
 LSTM_BATCH_SIZE: Final[int] = 256
-LSTM_EPOCHS: Final[int] = 25
-LSTM_PATIENCE: Final[int] = 5
+LSTM_EPOCHS: Final[int] = 30
+# Patience > epochs disables early stopping (we restore the best-val state
+# at the end regardless). The natural val window overlaps the COVID crash,
+# which causes premature early stopping when patience is small.
+LSTM_PATIENCE: Final[int] = 999

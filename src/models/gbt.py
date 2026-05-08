@@ -84,44 +84,61 @@ def train_gbt(
         Fitted LightGBM Booster.
     """
     params = dict(GBT_DEFAULT_PARAMS) if params is None else dict(params)
-    num_iterations = params.pop("num_iterations", 500)
-    early_stopping_round = params.pop("early_stopping_round", 50)
-
-    unique_dates = X.index.get_level_values("date").unique().sort_values()
-    cutoff_idx = max(1, int(len(unique_dates) * (1 - val_fraction)))
-    cutoff = unique_dates[cutoff_idx]
-
-    date_level = X.index.get_level_values("date")
-    train_mask = date_level < cutoff
-    val_mask = ~train_mask
-    X_train, X_val = X[train_mask], X[val_mask]
-    y_train, y_val = y[train_mask], y[val_mask]
+    num_iterations = params.pop("num_iterations", 200)
+    early_stopping_round = params.pop("early_stopping_round", None)
 
     categorical_features = ["regime", "asset_id"]
-    train_set = lgb.Dataset(
-        X_train, label=y_train, categorical_feature=categorical_features
-    )
-    val_set = lgb.Dataset(
-        X_val, label=y_val, reference=train_set,
-        categorical_feature=categorical_features,
-    )
+
+    if early_stopping_round:
+        # Optional path: caller explicitly opted into early stopping. The
+        # default training path skips it because our natural val window
+        # overlaps COVID and would cut training short.
+        unique_dates = X.index.get_level_values("date").unique().sort_values()
+        cutoff_idx = max(1, int(len(unique_dates) * (1 - val_fraction)))
+        cutoff = unique_dates[cutoff_idx]
+        date_level = X.index.get_level_values("date")
+        train_mask = date_level < cutoff
+        val_mask = ~train_mask
+        train_set = lgb.Dataset(
+            X[train_mask], label=y[train_mask],
+            categorical_feature=categorical_features,
+        )
+        val_set = lgb.Dataset(
+            X[val_mask], label=y[val_mask], reference=train_set,
+            categorical_feature=categorical_features,
+        )
+        logger.info(
+            "Training LightGBM: train=%d, val=%d, num_iter=%d, early_stop=%d",
+            int(train_mask.sum()), int(val_mask.sum()),
+            num_iterations, early_stopping_round,
+        )
+        model = lgb.train(
+            params=params,
+            train_set=train_set,
+            num_boost_round=num_iterations,
+            valid_sets=[val_set],
+            callbacks=[lgb.early_stopping(early_stopping_round, verbose=False)],
+        )
+    else:
+        # Default path: no early stopping. Train for fixed num_iterations on
+        # all data, rely on L2 regularization + bagging to avoid overfit.
+        train_set = lgb.Dataset(
+            X, label=y, categorical_feature=categorical_features,
+        )
+        logger.info(
+            "Training LightGBM: rows=%d, num_iter=%d (no early stopping)",
+            len(X), num_iterations,
+        )
+        model = lgb.train(
+            params=params,
+            train_set=train_set,
+            num_boost_round=num_iterations,
+        )
 
     logger.info(
-        "Training LightGBM: train=%d rows, val=%d rows, horizon=%d",
-        len(X_train),
-        len(X_val),
-        21,
+        "LightGBM trained: num_trees=%d, best_iteration=%s",
+        model.num_trees(), model.best_iteration,
     )
-
-    model = lgb.train(
-        params=params,
-        train_set=train_set,
-        num_boost_round=num_iterations,
-        valid_sets=[val_set],
-        callbacks=[lgb.early_stopping(early_stopping_round, verbose=False)],
-    )
-
-    logger.info("LightGBM trained: best_iteration=%s", model.best_iteration)
     return model
 
 
