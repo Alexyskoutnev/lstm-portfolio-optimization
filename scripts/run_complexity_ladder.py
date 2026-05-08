@@ -22,13 +22,13 @@ And prints a summary metrics table to stdout.
 # confused and segfaults during the first LSTM forward pass. These env vars
 # *must* be set before any import that pulls torch or lightgbm.
 import os
+
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import logging
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from src.config import (
@@ -92,15 +92,19 @@ def main() -> None:
     )
 
     logger.info("[1/3] Training Ridge regression")
-    ridge_model, ridge_cols = train_linreg(panel.loc[train_idx], target.loc[train_idx])
+    ridge_model, ridge_scaler, ridge_numeric, ridge_cols = train_linreg(
+        panel.loc[train_idx], target.loc[train_idx]
+    )
 
     logger.info("[2/3] Training LightGBM")
     gbt_model = train_gbt(panel.loc[train_idx], target.loc[train_idx])
 
     logger.info("[3/3] Training LSTM")
     train_log_returns = log_returns.loc[: train_end_date]
-    lstm_model, lstm_asset_order = train_lstm(
+    train_vix = vix.loc[: train_end_date]
+    lstm_model, lstm_asset_order, lstm_channel_stats, lstm_target_stats = train_lstm(
         train_log_returns,
+        train_vix,
         sequence_length=LSTM_SEQUENCE_LENGTH,
         horizon=GBT_FORECAST_HORIZON,
     )
@@ -110,13 +114,15 @@ def main() -> None:
     estimators = {
         "1_sample_mean":  None,  # default behavior
         "2_linreg":       linreg_mu_estimator(
-            ridge_model, ridge_cols, panel, asset_order, GBT_FORECAST_HORIZON,
+            ridge_model, ridge_scaler, ridge_numeric, ridge_cols,
+            panel, asset_order, GBT_FORECAST_HORIZON,
         ),
         "3_gbt":          gbt_mu_estimator(
             gbt_model, panel, asset_order, GBT_FORECAST_HORIZON,
         ),
         "4_lstm":         lstm_mu_estimator(
-            lstm_model, log_returns, lstm_asset_order,
+            lstm_model, log_returns, vix, lstm_asset_order,
+            lstm_channel_stats, lstm_target_stats,
             LSTM_SEQUENCE_LENGTH, GBT_FORECAST_HORIZON,
         ),
     }
@@ -175,9 +181,6 @@ def main() -> None:
     )
 
     logger.info("Done. Plots in %s", plots_dir.resolve())
-
-    # silence unused
-    _ = np
 
 
 if __name__ == "__main__":

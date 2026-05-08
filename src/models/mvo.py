@@ -35,7 +35,8 @@ What this module provides
 """
 
 import logging
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -584,6 +585,13 @@ def rolling_backtest(
         strategy: One of "max_sharpe" or "min_variance".
         rebalance_freq: Rebalance every N trading days.  Default 21 ≈ 1 month.
         risk_free_rate: Annualized risk-free rate for Sharpe optimization.
+        mu_estimator: Optional callable producing the µ vector at each
+            rebalance date. Signature is
+            ``(window_returns, current_date) -> np.ndarray``. When None
+            (default), the classical sample-mean estimator is used,
+            preserving pre-refactor behavior. Pass a learned estimator
+            (e.g. ``gbt_mu_estimator``, ``lstm_mu_estimator``) to swap in
+            an ML-based µ source.
 
     Returns:
         DataFrame with columns:
@@ -671,6 +679,8 @@ def _rebalance(
         strategy: Optimisation strategy name.
         risk_free_rate: Risk-free rate passed to max-Sharpe optimiser.
         fallback_weights: Weights to use if optimisation fails.
+        mu_estimator: Callable returning the µ vector for the current
+            rebalance date.
 
     Returns:
         New weight vector, or *fallback_weights* on failure.

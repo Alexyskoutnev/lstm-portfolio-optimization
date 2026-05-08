@@ -23,7 +23,7 @@ GBT-MVO, LSTM-MVO) so that the comparison isolates the contribution of mu.
 """
 
 import logging
-from typing import Callable
+from collections.abc import Callable
 
 import lightgbm as lgb
 import numpy as np

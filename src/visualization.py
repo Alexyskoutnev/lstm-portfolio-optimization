@@ -678,7 +678,11 @@ def plot_complexity_ladder(
         metrics_table: Indexed by model name, columns are metric values.
         save_path: Optional path to save the figure.
     """
-    metrics_to_plot = [c for c in ["sharpe", "sortino"] if c in metrics_table.columns]
+    preferred = ["sharpe_ratio", "sortino_ratio"]
+    metrics_to_plot = [c for c in preferred if c in metrics_table.columns]
+    if not metrics_to_plot:
+        # Fall back to short names if column names use them
+        metrics_to_plot = [c for c in ["sharpe", "sortino"] if c in metrics_table.columns]
     if not metrics_to_plot:
         metrics_to_plot = list(metrics_table.columns)[:2]
 
