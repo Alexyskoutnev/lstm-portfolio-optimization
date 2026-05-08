@@ -130,6 +130,37 @@ def _validate_split_ratios(train_ratio: float, val_ratio: float) -> None:
         raise ValueError("train_ratio + val_ratio must be less than 1.0")
 
 
+def _validate_temporal_index(df: pd.DataFrame) -> None:
+    """Ensure the DataFrame has a sorted DatetimeIndex.
+
+    A temporal split is only meaningful if the data is ordered
+    chronologically.  This guard catches two common mistakes:
+    1. Passing a DataFrame with an integer or string index instead
+       of proper datetime timestamps.
+    2. Passing data that was accidentally shuffled (e.g., by a
+       random sort or a bad merge).
+
+    Args:
+        df: DataFrame whose index to validate.
+
+    Raises:
+        TypeError: If the index is not a DatetimeIndex.
+        ValueError: If the dates are not strictly monotonically increasing.
+    """
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise TypeError(
+            f"Expected a DatetimeIndex for temporal splitting, "
+            f"got {type(df.index).__name__}. Convert your index with "
+            f"pd.to_datetime() before calling split_data()."
+        )
+    if not df.index.is_monotonic_increasing:
+        raise ValueError(
+            "DatetimeIndex is not sorted in ascending order. "
+            "Sort with df.sort_index() before splitting to ensure "
+            "train data always precedes val/test data chronologically."
+        )
+
+
 def split_data(
     df: pd.DataFrame,
     train_ratio: float = 0.7,
@@ -167,9 +198,12 @@ def split_data(
         Tuple of (train, validation, test) DataFrames.
 
     Raises:
-        ValueError: If ratios are invalid.
+        TypeError: If the index is not a DatetimeIndex.
+        ValueError: If ratios are invalid or dates are not monotonically
+            increasing (i.e., the data is not sorted chronologically).
     """
     _validate_split_ratios(train_ratio, val_ratio)
+    _validate_temporal_index(df)
 
     n = len(df)
 
@@ -181,6 +215,20 @@ def split_data(
     train = df.iloc[:train_end]
     val = df.iloc[train_end:val_end]
     test = df.iloc[val_end:]
+
+    # Final sanity check: the last date in each split must be strictly
+    # before the first date in the next split.  This is the core invariant
+    # that prevents look-ahead bias.
+    if len(val) > 0 and train.index[-1] >= val.index[0]:
+        raise ValueError(
+            f"Temporal ordering violated: train ends at {train.index[-1]} "
+            f"but val starts at {val.index[0]}"
+        )
+    if len(test) > 0 and len(val) > 0 and val.index[-1] >= test.index[0]:
+        raise ValueError(
+            f"Temporal ordering violated: val ends at {val.index[-1]} "
+            f"but test starts at {test.index[0]}"
+        )
 
     logger.info(
         "Temporal split sizes — train: %d, val: %d, test: %d (total: %d).",

@@ -84,3 +84,16 @@ class TestSplitData:
         """Should raise ValueError for invalid ratios."""
         with pytest.raises(ValueError, match="must be less than 1.0"):
             split_data(sample_prices, train_ratio=0.8, val_ratio=0.3)
+
+    def test_non_datetime_index_raises(self) -> None:
+        """Should raise TypeError if index is not DatetimeIndex."""
+        df = pd.DataFrame({"A": [1, 2, 3]}, index=[0, 1, 2])
+        with pytest.raises(TypeError, match="DatetimeIndex"):
+            split_data(df)
+
+    def test_unsorted_index_raises(self) -> None:
+        """Should raise ValueError if dates are not ascending."""
+        dates = pd.to_datetime(["2024-01-03", "2024-01-01", "2024-01-02"])
+        df = pd.DataFrame({"A": [1, 2, 3]}, index=dates)
+        with pytest.raises(ValueError, match="not sorted"):
+            split_data(df)
