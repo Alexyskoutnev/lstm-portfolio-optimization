@@ -95,11 +95,17 @@ returns ──► [µ estimator] ──► µ ──┐
 returns ──► sample covariance ──► Σ ──┘
 ```
 
-See [plots/mvo_vs_gbt_pipeline.png](plots/mvo_vs_gbt_pipeline.png) for the rendered side-by-side, and [plots/mvo_vs_gbt_mu_zoom.png](plots/mvo_vs_gbt_mu_zoom.png) for a zoom on the swap point.
+![Pipeline comparison: only the µ box differs](plots/mvo_vs_gbt_pipeline.png)
+
+The mu-replacement zoom:
+
+![Only the µ estimator changes between arms](plots/mvo_vs_gbt_mu_zoom.png)
 
 ---
 
 ## Results: 4-Way Benchmark (Test Period 2022–2025)
+
+![4-arm benchmark hero dashboard](plots/presentation_hero.png)
 
 All four µ estimators were trained on data up to 2021-03 and evaluated on the held-out test period using the same rolling 252-day backtest with 21-day rebalancing.
 
@@ -111,6 +117,18 @@ All four µ estimators were trained on data up to 2021-03 and evaluated on the h
 | **4. LSTM** | 12.20% | **11.90%** | 1.026 | 1.418 | **-12.05%** | **-1.13%** | **-1.60%** |
 
 (Bold = best in column. ↑ means "higher is better"; for max drawdown / VaR / CVaR "higher" means "less negative".)
+
+### Equity curves
+
+![Cumulative returns over the test period](plots/presentation_equity_curves.png)
+
+### Risk-adjusted performance at a glance
+
+![Sharpe / Sortino / Annual return / Max DD bars](plots/presentation_metrics_bars.png)
+
+### The complexity ladder
+
+![Sharpe and Sortino vs. model complexity](plots/presentation_complexity_ladder.png)
 
 ### What this tells us
 
@@ -143,6 +161,8 @@ The full metrics table is at [plots/complexity_ladder_metrics.csv](plots/complex
 
 The proposal posed three research questions. Mapped to our results:
 
+![Research-question summary: RQ1 risk-adjusted returns, RQ2 regime robustness, RQ3 downside risk](plots/presentation_rq_answers.png)
+
 ### RQ1 — Can ML-based forecasts improve Sharpe / Sortino vs classical MVO?
 
 **Answer: YES, decisively, but only with the right model class.**
@@ -156,11 +176,11 @@ The proposal posed three research questions. Mapped to our results:
 
 GBT's tree ensemble captures non-linear interactions (regime × momentum, VIX × cross-asset effects) that linear projections cannot. The LSTM also beats the baseline once given multi-channel input, z-scored features, and Huber loss. Linear Ridge actively *hurts* — confirming that the ML lift comes from non-linearity, not just from "having a model."
 
-📊 [plots/presentation_rq_answers.png](plots/presentation_rq_answers.png) (top panel) | [plots/presentation_metrics_bars.png](plots/presentation_metrics_bars.png)
-
 ### RQ2 — Are ML-enhanced portfolios more robust during high-volatility regimes?
 
 **Answer: YES — GBT dominates in both medium- and high-volatility regimes.**
+
+![Sharpe ratio bucketed by VIX regime](plots/presentation_regime_sharpe.png)
 
 Sharpe ratio bucketed by VIX regime (test period):
 
@@ -174,11 +194,11 @@ The high-vol bucket is the headline answer to RQ2: when markets are stressed, **
 
 This is exactly the RQ2 outcome the project hypothesized: non-linear models that condition on regime indicators (VIX level, dispersion) hold up better when correlations spike and a flat sample-mean µ becomes most misleading.
 
-📊 [plots/presentation_rq_answers.png](plots/presentation_rq_answers.png) (middle panel) | [plots/presentation_regime_sharpe.png](plots/presentation_regime_sharpe.png)
-
 ### RQ3 — Does nonlinear temporal structure reduce downside risk?
 
 **Answer: YES — LSTM produces the safest portfolio across all three downside metrics.**
+
+![VaR and CVaR at 95% — LSTM has the tightest tails](plots/presentation_var_cvar.png)
 
 | Pipeline | Max Drawdown ↑ | VaR 95% ↑ | CVaR 95% ↑ |
 |---|---:|---:|---:|
@@ -189,22 +209,31 @@ This is exactly the RQ2 outcome the project hypothesized: non-linear models that
 
 LSTM's recurrent dynamics + Huber loss + multi-channel input produce a smoother prediction surface that translates directly into more defensive portfolio weights. It pays for that defensiveness with lower return than GBT — but if a risk-averse investor weights drawdown and tail loss heavily, the LSTM is the right pick. GBT also beats the baseline on VaR. Ridge is *worse* than the baseline on every downside metric, confirming that linear miscalibration produces the worst tails.
 
-📊 [plots/presentation_rq_answers.png](plots/presentation_rq_answers.png) (bottom panels) | [plots/presentation_var_cvar.png](plots/presentation_var_cvar.png) | [plots/presentation_drawdown.png](plots/presentation_drawdown.png)
+The underwater (drawdown) view tells the same story:
+
+![Drawdown comparison across the four arms](plots/presentation_drawdown.png)
 
 ### Additional proposal-required metrics
 
-- **Portfolio turnover** (transaction-cost proxy): see [plots/presentation_turnover.png](plots/presentation_turnover.png).
-- **Performance across volatility regimes**: see [plots/presentation_regime_sharpe.png](plots/presentation_regime_sharpe.png) (RQ2 above).
+**Portfolio turnover** (transaction-cost proxy):
 
-### Headline figure
+![Average daily L1 weight change per arm](plots/presentation_turnover.png)
 
-For a one-slide summary, see the hero dashboard:
+LSTM has the *lowest* turnover (cheapest to trade), followed by sample-mean. GBT trades the most aggressively — its return advantage comes with a real-world friction cost that should be modeled before deploying.
 
-📊 [plots/presentation_hero.png](plots/presentation_hero.png)
+**What is the GBT actually using?** Top-15 features by gain:
+
+![GBT top-15 feature importance](plots/presentation_gbt_importance.png)
 
 ---
 
 ## System Architecture
+
+The full GBT-MVO data flow:
+
+![GBT-MVO data flow with Sigma and mu lanes](plots/mvo_vs_gbt_data_flow.png)
+
+Repository module layout:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
