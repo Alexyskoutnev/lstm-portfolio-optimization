@@ -135,7 +135,72 @@ This was *not* the first set of numbers we got — three concrete fixes turned a
 
 **The general lesson:** a "ML didn't help" result on a financial-prediction task is almost always a tuning artifact before it's an empirical finding. How you validate, what features you feed, and what loss you minimize matter as much as which architecture you pick.
 
-The full metrics table is at [plots/complexity_ladder_metrics.csv](plots/complexity_ladder_metrics.csv). See [plots/cumulative_complexity_ladder.png](plots/cumulative_complexity_ladder.png) for the equity curves and [plots/sharpe_by_regime_complexity_ladder.png](plots/sharpe_by_regime_complexity_ladder.png) for the regime-bucketed comparison.
+The full metrics table is at [plots/complexity_ladder_metrics.csv](plots/complexity_ladder_metrics.csv). See [plots/presentation_equity_curves.png](plots/presentation_equity_curves.png) for the equity curves and [plots/presentation_regime_sharpe.png](plots/presentation_regime_sharpe.png) for the regime-bucketed comparison.
+
+---
+
+## Research Questions (from the project proposal)
+
+The proposal posed three research questions. Mapped to our results:
+
+### RQ1 — Can ML-based forecasts improve Sharpe / Sortino vs classical MVO?
+
+**Answer: YES, decisively, but only with the right model class.**
+
+| Pipeline | Sharpe | Sortino | vs Sample-Mean Baseline |
+|---|---:|---:|---|
+| Sample mean (MVO baseline) | 0.96 | 1.28 | — |
+| Ridge | 0.61 | 0.82 | **−37% Sharpe** |
+| **GBT** | **1.46** | **2.14** | **+53% Sharpe**, **+67% Sortino** |
+| **LSTM** | 1.03 | 1.42 | +7% Sharpe, +10% Sortino |
+
+GBT's tree ensemble captures non-linear interactions (regime × momentum, VIX × cross-asset effects) that linear projections cannot. The LSTM also beats the baseline once given multi-channel input, z-scored features, and Huber loss. Linear Ridge actively *hurts* — confirming that the ML lift comes from non-linearity, not just from "having a model."
+
+📊 [plots/presentation_rq_answers.png](plots/presentation_rq_answers.png) (top panel) | [plots/presentation_metrics_bars.png](plots/presentation_metrics_bars.png)
+
+### RQ2 — Are ML-enhanced portfolios more robust during high-volatility regimes?
+
+**Answer: YES — GBT dominates in both medium- and high-volatility regimes.**
+
+Sharpe ratio bucketed by VIX regime (test period):
+
+| Regime | Sample mean | Ridge | **GBT** | LSTM |
+|---|---:|---:|---:|---:|
+| Low (VIX < 15) | 3.8 | 4.4 | 3.4 | 4.1 |
+| Medium (15 ≤ VIX < 25) | 0.2 | −0.3 | **1.6** | 0.6 |
+| **High (VIX ≥ 25)** | −3.5 | −4.4 | **−1.1** | −3.7 |
+
+The high-vol bucket is the headline answer to RQ2: when markets are stressed, **GBT's Sharpe is −1.1 vs −3.5 for the sample-mean baseline** — a 3× reduction in how badly the strategy degrades. The medium-vol regime tells the same story: GBT 1.6 vs 0.2 baseline. Only in calm markets (low-vol) does Ridge edge out GBT, and that's the regime where signal is easiest to extract from any model.
+
+This is exactly the RQ2 outcome the project hypothesized: non-linear models that condition on regime indicators (VIX level, dispersion) hold up better when correlations spike and a flat sample-mean µ becomes most misleading.
+
+📊 [plots/presentation_rq_answers.png](plots/presentation_rq_answers.png) (middle panel) | [plots/presentation_regime_sharpe.png](plots/presentation_regime_sharpe.png)
+
+### RQ3 — Does nonlinear temporal structure reduce downside risk?
+
+**Answer: YES — LSTM produces the safest portfolio across all three downside metrics.**
+
+| Pipeline | Max Drawdown ↑ | VaR 95% ↑ | CVaR 95% ↑ |
+|---|---:|---:|---:|
+| Sample mean | −13.96% | −1.40% | −1.96% |
+| Ridge | −26.01% | −1.61% | −2.29% |
+| GBT | −15.87% | −1.34% | −2.13% |
+| **LSTM** | **−12.05%** | **−1.13%** | **−1.60%** |
+
+LSTM's recurrent dynamics + Huber loss + multi-channel input produce a smoother prediction surface that translates directly into more defensive portfolio weights. It pays for that defensiveness with lower return than GBT — but if a risk-averse investor weights drawdown and tail loss heavily, the LSTM is the right pick. GBT also beats the baseline on VaR. Ridge is *worse* than the baseline on every downside metric, confirming that linear miscalibration produces the worst tails.
+
+📊 [plots/presentation_rq_answers.png](plots/presentation_rq_answers.png) (bottom panels) | [plots/presentation_var_cvar.png](plots/presentation_var_cvar.png) | [plots/presentation_drawdown.png](plots/presentation_drawdown.png)
+
+### Additional proposal-required metrics
+
+- **Portfolio turnover** (transaction-cost proxy): see [plots/presentation_turnover.png](plots/presentation_turnover.png).
+- **Performance across volatility regimes**: see [plots/presentation_regime_sharpe.png](plots/presentation_regime_sharpe.png) (RQ2 above).
+
+### Headline figure
+
+For a one-slide summary, see the hero dashboard:
+
+📊 [plots/presentation_hero.png](plots/presentation_hero.png)
 
 ---
 
