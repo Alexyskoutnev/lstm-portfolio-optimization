@@ -35,7 +35,7 @@ What this module provides
 """
 
 import logging
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
@@ -517,12 +517,27 @@ def _solve_frontier_point(
 _VALID_STRATEGIES = {"max_sharpe", "min_variance"}
 
 
+def _default_mu_estimator(
+    window_returns: pd.DataFrame,
+    current_date: pd.Timestamp,  # noqa: ARG001 — kept for interface symmetry
+) -> np.ndarray:
+    """Default mu estimator: sample mean of the lookback window, annualized.
+
+    This is the classical Markowitz behavior. Kept as a separate function so
+    it satisfies the same callable signature as learned estimators (e.g.,
+    ``gbt_mu_estimator``), letting ``rolling_backtest`` treat all mu sources
+    uniformly.
+    """
+    return np.array(window_returns.mean()) * _TRADING_DAYS_PER_YEAR
+
+
 def rolling_backtest(
     returns: pd.DataFrame,
     window: int = 252,
     strategy: str = "max_sharpe",
     rebalance_freq: int = 21,
     risk_free_rate: float = 0.0,
+    mu_estimator: Callable[[pd.DataFrame, pd.Timestamp], np.ndarray] | None = None,
 ) -> pd.DataFrame:
     """Run a rolling-window out-of-sample backtest.
 
@@ -584,6 +599,9 @@ def rolling_backtest(
             f"Unknown strategy '{strategy}'. Choose from {sorted(_VALID_STRATEGIES)}."
         )
 
+    if mu_estimator is None:
+        mu_estimator = _default_mu_estimator
+
     n_assets = returns.shape[1]
     asset_names = returns.columns.tolist()
     oos_days = len(returns) - window  # number of out-of-sample days
@@ -613,7 +631,8 @@ def rolling_backtest(
         # after the first out-of-sample date).
         if (i - window) % rebalance_freq == 0:
             current_weights = _rebalance(
-                returns, i, window, strategy, risk_free_rate, current_weights
+                returns, i, window, strategy, risk_free_rate, current_weights,
+                mu_estimator,
             )
 
         daily_return = _compute_daily_return(returns.iloc[i].values, current_weights)
@@ -631,6 +650,7 @@ def _rebalance(
     strategy: str,
     risk_free_rate: float,
     fallback_weights: np.ndarray,
+    mu_estimator: Callable[[pd.DataFrame, pd.Timestamp], np.ndarray],
 ) -> np.ndarray:
     """Estimate parameters and compute new portfolio weights.
 
@@ -656,9 +676,13 @@ def _rebalance(
         New weight vector, or *fallback_weights* on failure.
     """
     train_slice = returns.iloc[current_idx - window : current_idx]
-    mean_ret, cov_mat = estimate_parameters(train_slice)
-
     rebalance_date = returns.index[current_idx]
+
+    # Σ stays sample-based across all mu sources so the comparison isolates
+    # the contribution of the expected-return estimator.
+    _, cov_mat = estimate_parameters(train_slice)
+    mean_ret = mu_estimator(train_slice, rebalance_date)
+
     logger.debug("Rebalancing on %s (strategy=%s)", rebalance_date, strategy)
 
     try:

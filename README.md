@@ -1,6 +1,6 @@
-# Risk-Adjusted Portfolio Optimization: ML vs. Markowitz
+# Risk-Adjusted Portfolio Optimization: A Model-Complexity Ladder
 
-A modular Python framework for comparing classical Markowitz Mean-Variance Optimization (MVO) with LSTM-based deep learning for portfolio construction. Built for the AIM 5005 Machine Learning course at Yeshiva University.
+A modular Python framework that benchmarks **four expected-return estimators** — from a no-learning baseline up to a recurrent neural network — inside an otherwise-identical Markowitz portfolio pipeline. Built for the AIM 5005 Machine Learning course at Yeshiva University.
 
 ---
 
@@ -8,16 +8,30 @@ A modular Python framework for comparing classical Markowitz Mean-Variance Optim
 
 ### The Question
 
-> Can deep learning (LSTM) improve risk-adjusted portfolio performance compared to classical Markowitz optimization, especially during high-volatility market regimes?
+> Does adding model complexity to the expected-return estimator µ improve risk-adjusted portfolio performance versus classical Markowitz, especially during high-volatility market regimes — and where on the complexity ladder does the marginal return diminish?
 
 ### The Approach
 
-We build two portfolio construction pipelines and evaluate them head-to-head:
+Markowitz Mean-Variance Optimization needs two inputs: an expected-return vector µ and a covariance matrix Σ. Σ is estimated reasonably well from historical data; **µ is famously noisy and is what destroys MVO out-of-sample** (Michaud 1989, "error maximization"). So the natural place to insert ML is to replace the sample-mean µ with a learned, conditional µ.
 
-1. **Markowitz MVO Baseline** — Classical mean-variance optimization using historical returns and covariance
-2. **LSTM-Enhanced Portfolio** — Deep learning forecasts of future returns, fed into portfolio optimization
+We build a **complexity ladder** of four µ estimators and run them through the same Markowitz pipeline (same Σ, same SLSQP optimizer, same long-only constraints, same rolling backtest):
 
-Both are evaluated with a rigorous walk-forward backtesting framework across 15+ years of market data (2010–2025), covering multiple market regimes including the COVID crash, 2022 rate hikes, and calm bull markets.
+| # | Estimator | Type | Inputs |
+|---|---|---|---|
+| 1 | **Sample mean** | No learning (baseline) | Last 252 days of own returns |
+| 2 | **Ridge regression** | Linear ML | Tabular feature panel (lags, vol, VIX, regime, cross-asset) |
+| 3 | **LightGBM** | Gradient-boosted trees | Same tabular feature panel |
+| 4 | **LSTM** | Recurrent neural net | Sequence of trailing 60-day returns + asset embedding |
+
+Each estimator predicts the **same target**: cumulative log return over the next 21 trading days (the rebalance horizon). All four are evaluated on identical out-of-sample windows over 15+ years of market data (2010–2025), covering multiple market regimes including the 2020 COVID crash, 2022 rate hikes, and calm bull markets.
+
+### Why a complexity ladder
+
+A two-arm comparison ("Markowitz vs LSTM") tells you whether one specific deep model beats the baseline, but not *whether the win comes from learning at all* or *whether the recurrent dynamics matter*. With four arms in increasing complexity, you can read the marginal value of each step:
+
+- **Sample mean → Ridge** answers: does any conditioning on features beat a flat historical mean?
+- **Ridge → GBT** answers: do non-linear interactions help?
+- **GBT → LSTM** answers: does sequential / recurrent structure add anything beyond hand-engineered features?
 
 ### Key Metrics
 
@@ -28,6 +42,93 @@ Both are evaluated with a rigorous walk-forward backtesting framework across 15+
 | Maximum Drawdown | Worst peak-to-trough decline |
 | VaR / CVaR | Tail risk (worst-case losses) |
 | Portfolio Turnover | Trading frequency / transaction cost proxy |
+
+---
+
+## The Four µ Estimators in Detail
+
+All four estimators answer the same question: *given information available at date t, what is the expected return of each ETF over the next 21 trading days?* They differ in what information they use and how flexibly they combine it.
+
+### 1. Sample Mean (no learning — the baseline)
+
+```
+µ_i = mean(returns_i over last 252 days) × 252
+```
+
+The classical Markowitz µ. Treats every day in the lookback window equally, ignores all other information, and assumes the future looks like the average of the recent past. **Module:** [src/models/mvo.py](src/models/mvo.py) (`_default_mu_estimator`).
+
+This is *not* a bad baseline despite its simplicity. With 252 daily observations, the standard error of the sample mean for a 20%-vol ETF is about 1.3% — often larger than the signal — and Markowitz amplifies this noise into wildly varying weights. Beating it cleanly out-of-sample is genuinely hard.
+
+### 2. Ridge Regression (simplest ML)
+
+Linear model fit on a tabular feature panel. The features at each (date, asset) row are:
+
+- **Lagged returns** at horizons 1d, 5d, 21d, 63d, 126d
+- **Rolling stats**: 21d & 63d volatility, 21d mean, 21d skew
+- **VIX features**: level and Δ over 5d/21d/63d
+- **Regime label**: low / medium / high (one-hot)
+- **Cross-asset signals**: market mean return, cross-sectional dispersion, this asset's spread vs market
+- **Calendar**: month, day-of-week
+- **Asset id** (one-hot)
+
+A single Ridge model is trained globally — one set of coefficients that operates across all assets, with the asset-id dummies giving each ETF its own intercept. **Module:** [src/models/linreg.py](src/models/linreg.py).
+
+### 3. LightGBM (medium complexity — non-linear trees)
+
+A gradient-boosted ensemble of decision trees, trained on the **same feature panel** as Ridge. The model captures non-linear interactions through tree splits ("if VIX > 25 *and* 21d momentum < 0, predict −0.01") and handles categorical features (regime, asset_id) natively.
+
+A single global LightGBM regressor is trained on the stacked (date × asset) panel — pooling ~33,000 training rows instead of ~3,000 per asset. Time-based hold-out provides early stopping. **Module:** [src/models/gbt.py](src/models/gbt.py).
+
+### 4. LSTM (most complex — recurrent neural net)
+
+A small LSTM (32 hidden units, 1 layer, dropout) that consumes the **sequence of trailing 60 daily log returns** for one asset, plus a learned 4-dim embedding of asset identity. It outputs the predicted 21-day forward return.
+
+This is the only arm that ingests data as a *sequence* rather than as a flat tabular feature vector. The hypothesis: recurrent dynamics let the model represent autocorrelation, momentum, and reversal patterns that are hard to encode by hand. Trained globally across all ETFs. **Module:** [src/models/lstm.py](src/models/lstm.py).
+
+### What changes, what stays the same
+
+The whole point of the framework is that **only the µ box changes** between arms. Σ, the optimizer, the constraints, and the backtest harness are byte-identical:
+
+```
+returns ──► [µ estimator] ──► µ ──┐
+                                  ├──► SLSQP (max Sharpe) ──► weights ──► realized returns
+returns ──► sample covariance ──► Σ ──┘
+```
+
+See [plots/mvo_vs_gbt_pipeline.png](plots/mvo_vs_gbt_pipeline.png) for the rendered side-by-side, and [plots/mvo_vs_gbt_mu_zoom.png](plots/mvo_vs_gbt_mu_zoom.png) for a zoom on the swap point.
+
+---
+
+## Results: 4-Way Benchmark (Test Period 2022–2025)
+
+All four µ estimators were trained on data up to 2021-03 and evaluated on the held-out test period using the same rolling 252-day backtest with 21-day rebalancing.
+
+| Model | Annual Return | Annual Vol | Sharpe ↑ | Sortino ↑ | Max DD ↑ | VaR 95% ↑ | CVaR 95% ↑ |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 1. Sample mean | **13.05%** | 13.66% | **0.955** | **1.284** | -13.96% | -1.40% | -1.96% |
+| 2. Ridge | 8.80% | 12.62% | 0.698 | 0.963 | -13.65% | -1.25% | -1.74% |
+| 3. GBT | 7.71% | **11.06%** | 0.697 | 0.955 | **-11.85%** | **-0.99%** | **-1.49%** |
+| 4. LSTM | 6.84% | 13.30% | 0.514 | 0.687 | -16.83% | -1.27% | -1.97% |
+
+(Bold = best in column. ↑ means "higher is better" for risk-adjusted returns; for max drawdown / VaR / CVaR "higher" means "less negative".)
+
+### What this tells us
+
+**The sample mean wins on Sharpe and Sortino.** This is the empirically-honest answer to the project's central question: in this experiment, adding model complexity to the µ estimator did *not* deliver better risk-adjusted returns. Three reasons consistent with the literature:
+
+1. **Error maximization cuts both ways.** Markowitz's sensitivity to µ doesn't only amplify sample-mean noise — it also amplifies any systematic bias the ML model introduces. A model that's slightly miscalibrated in expectation can produce noisier portfolio weights than the unbiased sample mean.
+2. **Limited data + noisy target.** ~2,800 training days × 11 ETFs is small for deep learning. The signal in 21-day forward returns is weak (Sharpe of a "perfect" predictor isn't infinite — markets are mostly noise), so the bias-variance trade-off favors low-capacity models.
+3. **Out-of-sample regime shift.** The test window (2022–2025) includes the 2022 rate-shock bear market, COVID echoes, and a strong 2024 rally — regimes very different from much of the training data. Flexible models that fit the training distribution closely tend to extrapolate poorly into novel regimes.
+
+**Where the ML arms do help:** GBT delivers the **lowest max drawdown (-11.85%)** and the **tightest tail risk** (best VaR and CVaR) of any arm. So even though it earns less return, it produces a more *defensive* portfolio. For a risk-averse investor that may be more valuable than Sharpe alone suggests.
+
+**The complexity ladder reading:**
+
+- *Sample mean → Ridge:* +features hurt Sharpe (-0.26). Suggests the features added bias without enough variance reduction.
+- *Ridge → GBT:* roughly tied on Sharpe but GBT cuts vol and tail risk meaningfully. Non-linearities help on the *risk* axis even when they don't help on returns.
+- *GBT → LSTM:* recurrent dynamics underperformed flat features here. This is a small-data, low-signal regime where the LSTM's extra capacity didn't pay off.
+
+The full metrics table is at [plots/complexity_ladder_metrics.csv](plots/complexity_ladder_metrics.csv). See [plots/cumulative_complexity_ladder.png](plots/cumulative_complexity_ladder.png) for the equity curves and [plots/sharpe_by_regime_complexity_ladder.png](plots/sharpe_by_regime_complexity_ladder.png) for the regime-bucketed comparison.
 
 ---
 
@@ -83,15 +184,18 @@ Both are evaluated with a rigorous walk-forward backtesting framework across 15+
 
 | Module | Responsibility | Key Functions |
 |--------|---------------|---------------|
-| `src/config.py` | Single source of truth for all project constants — tickers, date ranges, thresholds, paths | Constants only, no logic |
+| `src/config.py` | Single source of truth for all project constants — tickers, date ranges, model hyperparameters | Constants only, no logic |
 | `src/data/fetcher.py` | Download and cache ETF/VIX data from Yahoo Finance via yfinance | `fetch_prices()`, `fetch_vix()` |
 | `src/data/preprocessing.py` | Transform raw prices into model-ready features | `compute_log_returns()`, `compute_simple_returns()`, `split_data()` |
 | `src/data/regime.py` | Label market volatility regimes for conditional analysis | `label_regimes_vix()`, `label_regimes_rolling_std()` |
+| `src/data/features.py` | Build the strictly-lagged (date × asset) feature panel consumed by Ridge and GBT | `build_feature_panel()` |
 | `src/data/__init__.py` | Public API combining all data steps into one call | `load_dataset()` |
-| `src/models/mvo.py` | Classical Markowitz optimization and backtesting engine | `minimum_variance_weights()`, `max_sharpe_weights()`, `efficient_frontier()`, `rolling_backtest()` |
-| `src/models/lstm.py` | *(TODO)* LSTM return forecasting and portfolio construction | — |
+| `src/models/mvo.py` | Classical Markowitz optimization, refactored backtest with injectable µ-estimator | `minimum_variance_weights()`, `max_sharpe_weights()`, `rolling_backtest()` |
+| `src/models/linreg.py` | Ridge regression µ-estimator (simplest ML arm) | `train_linreg()`, `linreg_mu_estimator()` |
+| `src/models/gbt.py` | LightGBM µ-estimator (gradient-boosted trees) | `train_gbt()`, `predict_returns()`, `gbt_mu_estimator()`, `build_target()` |
+| `src/models/lstm.py` | LSTM µ-estimator (recurrent neural net on return sequences) | `train_lstm()`, `lstm_mu_estimator()` |
 | `src/risk_metrics.py` | Compute all risk-adjusted performance metrics | `sharpe_ratio()`, `sortino_ratio()`, `max_drawdown()`, `value_at_risk()`, `conditional_var()` |
-| `src/visualization.py` | Generate publication-quality plots for analysis | 6 plot functions |
+| `src/visualization.py` | Plotting (incl. multi-arm comparison, regime-bucketed Sharpe, complexity-ladder) | 10 plot functions |
 
 ### Data Flow
 
@@ -187,16 +291,25 @@ python -m pytest tests/ -v
 ### Run Full Pipeline
 
 ```bash
+# Run the four-arm benchmark end-to-end (sample-mean / Ridge / GBT / LSTM)
+python scripts/run_complexity_ladder.py
+
+# Or just the data-only check + classical MVO baseline
 python scripts/verify_data.py
+
+# Render explanatory architecture diagrams
+python scripts/draw_architecture_comparison.py
 ```
 
-This will:
+`run_complexity_ladder.py` does all of the following:
+
 1. Download all ETF and VIX data (cached in `data/raw/`)
-2. Compute returns and identify volatility regimes
-3. Run MVO baseline (min-variance and max-Sharpe strategies)
-4. Run rolling backtest across full dataset
-5. Compute all risk metrics
-6. Generate 6 visualization plots in `plots/`
+2. Compute log returns, simple returns, and VIX-based regime labels
+3. Build the (date × asset) feature panel for tabular models
+4. Train Ridge, LightGBM, and LSTM on the train portion only (no test leakage)
+5. Run four backtests on the test slice, sharing identical Σ, optimizer, and constraints
+6. Compute Sharpe / Sortino / max drawdown / VaR / CVaR for all four arms
+7. Save a metrics CSV (`plots/complexity_ladder_metrics.csv`) and four comparison plots
 
 ### Lint and Type Check
 
@@ -213,17 +326,21 @@ pyright src/
 final_project/
 ├── src/
 │   ├── __init__.py
-│   ├── config.py               # Project constants and hyperparameters
+│   ├── config.py                  # All constants and hyperparameters
 │   ├── data/
-│   │   ├── __init__.py         # load_dataset() public API
-│   │   ├── fetcher.py          # yfinance data download + CSV caching
-│   │   ├── preprocessing.py    # Returns computation, temporal splits
-│   │   └── regime.py           # Volatility regime identification
+│   │   ├── __init__.py            # load_dataset() public API
+│   │   ├── fetcher.py             # yfinance data download + CSV caching
+│   │   ├── preprocessing.py       # Returns computation, temporal splits
+│   │   ├── regime.py              # Volatility regime identification
+│   │   └── features.py            # (date × asset) feature panel for ML arms
 │   ├── models/
 │   │   ├── __init__.py
-│   │   └── mvo.py              # Markowitz optimization + backtesting
-│   ├── risk_metrics.py         # Sharpe, Sortino, MDD, VaR, CVaR
-│   └── visualization.py        # All plotting functions
+│   │   ├── mvo.py                 # Markowitz optimization + injectable µ
+│   │   ├── linreg.py              # Ridge regression µ-estimator
+│   │   ├── gbt.py                 # LightGBM µ-estimator
+│   │   └── lstm.py                # LSTM µ-estimator
+│   ├── risk_metrics.py            # Sharpe, Sortino, MDD, VaR, CVaR
+│   └── visualization.py           # Plotting (incl. multi-arm comparison)
 ├── tests/
 │   ├── data/
 │   │   ├── test_preprocessing.py
@@ -232,13 +349,17 @@ final_project/
 │   │   └── test_mvo.py
 │   └── test_risk_metrics.py
 ├── scripts/
-│   └── verify_data.py          # Full pipeline runner
+│   ├── verify_data.py                      # Data-only sanity run
+│   ├── run_complexity_ladder.py            # 4-way benchmark (main runner)
+│   └── draw_architecture_comparison.py     # Render explanatory diagrams
 ├── docs/
-│   ├── theory.md               # Comprehensive theory guide
-│   └── superpowers/plans/      # Implementation plans
-├── data/raw/                   # Cached CSV data (gitignored)
-├── plots/                      # Generated visualizations (gitignored)
-├── pyproject.toml              # uv + ruff + pyright config
+│   ├── theory.md                           # Theory guide
+│   └── superpowers/
+│       ├── specs/                          # Design specs
+│       └── plans/                          # Implementation plans
+├── data/raw/                  # Cached CSV data (gitignored)
+├── plots/                     # Generated figures (gitignored)
+├── pyproject.toml             # uv + ruff + pyright config
 ├── requirements.txt
 └── .gitignore
 ```
@@ -249,7 +370,7 @@ final_project/
 
 | Member | Responsibility |
 |--------|---------------|
-| Alexy Skoutnev | Data collection, preprocessing, MVO baseline |
+| Alexy Skoutnev | Data pipeline, MVO baseline, GBT and Ridge arms, complexity-ladder benchmark |
 | Shaun Mukahanana | LSTM model development and tuning |
 | Tadiwanashe Chiremba | Backtesting engine, risk metrics, visualization |
 

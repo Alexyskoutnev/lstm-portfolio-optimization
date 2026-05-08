@@ -11,6 +11,9 @@ dependencies = [
     "scikit-learn>=1.3.0",
     "scipy>=1.11.0",
     "matplotlib>=3.7.0",
+    "lightgbm>=4.0.0",
+    "optuna>=3.0.0",
+    "torch>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -49,9 +52,15 @@ pythonVersion = "3.11"
 typeCheckingMode = "basic"
 venvPath = "."
 venv = ".venv"
-# matplotlib and yfinance have incomplete type stubs; suppress false positives
+# matplotlib, yfinance, and pandas have incomplete type stubs; suppress
+# false positives. The most common offender is pandas operations whose return
+# type is statically Series|DataFrame but is unambiguous at runtime.
 reportAssignmentType = "warning"
 reportAttributeAccessIssue = "warning"
+reportArgumentType = "warning"
+reportCallIssue = "warning"
+reportMissingImports = "warning"
+reportReturnType = "warning"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src"]

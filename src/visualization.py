@@ -552,3 +552,154 @@ def plot_rolling_sharpe(
     if save_path:
         _save_figure(fig, save_path)
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Multi-arm comparison plots (sample-mean vs linreg vs GBT vs LSTM)
+# ---------------------------------------------------------------------------
+
+def plot_multi_arm_cumulative(
+    backtests: dict[str, pd.DataFrame],
+    save_path: str | None = None,
+) -> matplotlib.figure.Figure:
+    """Plot cumulative returns of multiple backtest pipelines on one axes.
+
+    Args:
+        backtests: Mapping of pipeline name -> backtest result DataFrame
+            (must contain a "cumulative_return" column).
+        save_path: Optional path to save the figure.
+    """
+    fig, ax = plt.subplots(figsize=(11, 6))
+    for name, df in backtests.items():
+        ax.plot(df.index, df["cumulative_return"], label=name, linewidth=1.5)
+    _style_axis(
+        ax,
+        xlabel="Date",
+        ylabel="Cumulative Return",
+        title="Cumulative Returns: Model-Complexity Ladder",
+    )
+    ax.legend(loc="best")
+    if save_path:
+        _save_figure(fig, save_path)
+    return fig
+
+
+def plot_feature_importance(
+    model,
+    save_path: str | None = None,
+    top_n: int = 20,
+) -> matplotlib.figure.Figure:
+    """Plot LightGBM feature importance (gain) for the trained GBT model.
+
+    Args:
+        model: Fitted LightGBM Booster.
+        save_path: Optional path to save the figure.
+        top_n: Number of top features to display.
+    """
+    importance = model.feature_importance(importance_type="gain")
+    names = model.feature_name()
+    df = (
+        pd.DataFrame({"feature": names, "gain": importance})
+        .sort_values("gain", ascending=True)
+        .tail(top_n)
+    )
+    fig, ax = plt.subplots(figsize=(8, max(4, top_n * 0.3)))
+    ax.barh(df["feature"], df["gain"])
+    _style_axis(
+        ax,
+        xlabel="Gain",
+        ylabel="",
+        title=f"Top {top_n} GBT Feature Importance (Gain)",
+    )
+    if save_path:
+        _save_figure(fig, save_path)
+    return fig
+
+
+def plot_regime_bucketed_sharpe(
+    backtests: dict[str, pd.DataFrame],
+    regimes: pd.Series,
+    risk_free_rate: float = 0.0,
+    save_path: str | None = None,
+) -> matplotlib.figure.Figure:
+    """Bar chart of Sharpe ratio per pipeline, broken out by regime.
+
+    Args:
+        backtests: Mapping of pipeline name -> backtest result DataFrame
+            (must contain a "portfolio_return" column).
+        regimes: Series of regime labels aligned to backtest dates.
+        risk_free_rate: Annualized risk-free rate.
+        save_path: Optional path to save the figure.
+    """
+    from src.risk_metrics import sharpe_ratio
+
+    regime_labels = ["low", "medium", "high"]
+    pipelines = list(backtests.keys())
+    sharpe_matrix = np.zeros((len(pipelines), len(regime_labels)))
+    for i, name in enumerate(pipelines):
+        df = backtests[name]
+        aligned = regimes.reindex(df.index)
+        for j, label in enumerate(regime_labels):
+            mask = aligned == label
+            ret = df.loc[mask, "portfolio_return"]
+            sharpe_matrix[i, j] = (
+                sharpe_ratio(ret, risk_free_rate=risk_free_rate) if len(ret) > 1 else 0.0
+            )
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    bar_width = 0.8 / len(pipelines)
+    x = np.arange(len(regime_labels))
+    for i, name in enumerate(pipelines):
+        ax.bar(x + i * bar_width, sharpe_matrix[i], bar_width, label=name)
+    ax.set_xticks(x + bar_width * (len(pipelines) - 1) / 2)
+    ax.set_xticklabels(regime_labels)
+    _style_axis(
+        ax,
+        xlabel="VIX Regime",
+        ylabel="Sharpe Ratio",
+        title="Sharpe Ratio by Volatility Regime",
+    )
+    ax.legend(loc="best")
+    if save_path:
+        _save_figure(fig, save_path)
+    return fig
+
+
+def plot_complexity_ladder(
+    metrics_table: pd.DataFrame,
+    save_path: str | None = None,
+) -> matplotlib.figure.Figure:
+    """Visualize how risk-adjusted performance changes with model complexity.
+
+    Expects a DataFrame indexed by model name (in complexity order) with
+    one column per metric (e.g., 'sharpe', 'sortino', 'max_drawdown').
+
+    Args:
+        metrics_table: Indexed by model name, columns are metric values.
+        save_path: Optional path to save the figure.
+    """
+    metrics_to_plot = [c for c in ["sharpe", "sortino"] if c in metrics_table.columns]
+    if not metrics_to_plot:
+        metrics_to_plot = list(metrics_table.columns)[:2]
+
+    fig, axes = plt.subplots(1, len(metrics_to_plot), figsize=(5 * len(metrics_to_plot), 5))
+    if len(metrics_to_plot) == 1:
+        axes = [axes]
+    for ax, metric in zip(axes, metrics_to_plot, strict=False):
+        ax.plot(
+            range(len(metrics_table)),
+            metrics_table[metric].values,
+            marker="o", linewidth=2, markersize=10,
+        )
+        ax.set_xticks(range(len(metrics_table)))
+        ax.set_xticklabels(metrics_table.index, rotation=20)
+        _style_axis(
+            ax,
+            xlabel="Model (simple → complex)",
+            ylabel=metric,
+            title=f"{metric.title()} vs. Model Complexity",
+        )
+    fig.tight_layout()
+    if save_path:
+        _save_figure(fig, save_path)
+    return fig

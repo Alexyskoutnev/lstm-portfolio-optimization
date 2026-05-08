@@ -40,6 +40,7 @@ financial time series data.  The full pipeline is:
 
 import logging
 
+from src.data.features import build_feature_panel
 from src.data.fetcher import fetch_prices, fetch_vix
 from src.data.preprocessing import compute_log_returns, compute_simple_returns, split_data
 from src.data.regime import label_regimes_rolling_std, label_regimes_vix
@@ -54,6 +55,7 @@ __all__ = [
     "split_data",
     "label_regimes_vix",
     "label_regimes_rolling_std",
+    "build_feature_panel",
     "load_dataset",
 ]
 

@@ -106,3 +106,47 @@ VIX_HIGH_THRESHOLD: Final[float] = 25.0
 # Data paths
 # ---------------------------------------------------------------------------
 RAW_DATA_DIR: Final[str] = "data/raw"
+
+# ---------------------------------------------------------------------------
+# Feature engineering windows (used by src/data/features.py)
+# ---------------------------------------------------------------------------
+RETURN_LAGS: Final[list[int]] = [1, 5, 21, 63, 126]
+ROLLING_VOL_WINDOWS: Final[list[int]] = [21, 63]
+ROLLING_MEAN_WINDOWS: Final[list[int]] = [21]
+ROLLING_SKEW_WINDOWS: Final[list[int]] = [21]
+VIX_DELTA_HORIZONS: Final[list[int]] = [5, 21, 63]
+CROSS_ASSET_WINDOW: Final[int] = 21
+
+# ---------------------------------------------------------------------------
+# GBT model hyperparameters (used by src/models/gbt.py)
+# ---------------------------------------------------------------------------
+GBT_FORECAST_HORIZON: Final[int] = 21
+GBT_REFIT_FREQ: Final[int] = 63
+GBT_DEFAULT_PARAMS: Final[dict] = {
+    "objective": "regression_l2",
+    "metric": "rmse",
+    "num_leaves": 31,
+    "learning_rate": 0.05,
+    "min_data_in_leaf": 50,
+    "feature_fraction": 0.8,
+    "bagging_fraction": 0.8,
+    "bagging_freq": 5,
+    "lambda_l2": 1.0,
+    "num_iterations": 500,
+    "early_stopping_round": 50,
+    "verbose": -1,
+}
+GBT_OPTUNA_TRIALS: Final[int] = 50
+GBT_CV_FOLDS: Final[int] = 5
+
+# ---------------------------------------------------------------------------
+# LSTM model hyperparameters (used by src/models/lstm.py)
+# ---------------------------------------------------------------------------
+LSTM_SEQUENCE_LENGTH: Final[int] = 60        # Days of history fed into each forecast
+LSTM_HIDDEN_SIZE: Final[int] = 32
+LSTM_NUM_LAYERS: Final[int] = 1
+LSTM_DROPOUT: Final[float] = 0.1
+LSTM_LEARNING_RATE: Final[float] = 1e-3
+LSTM_BATCH_SIZE: Final[int] = 256
+LSTM_EPOCHS: Final[int] = 25
+LSTM_PATIENCE: Final[int] = 5
